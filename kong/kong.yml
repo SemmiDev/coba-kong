@@ -1,0 +1,210 @@
+# Kong Declarative Configuration
+# Format ini disebut "DB-less mode" atau "declarative config"
+# Ini adalah cara modern untuk configure Kong dengan version control
+
+_format_version: "3.0"
+_transform: true
+
+# Services mendefinisikan upstream APIs atau microservices yang akan di-proxy Kong
+# Setiap service merepresentasikan satu backend application
+services:
+  # User Service configuration
+  - name: user-service
+    # URL ke backend service kita
+    # Format: protocol://hostname:port
+    # Hostname menggunakan nama container karena dalam satu Docker network
+    url: http://user-service:8080
+    # Path prefix di backend service
+    # Jika backend expose di /api/v1, kita set di sini
+    path: /
+    # Protocol yang digunakan untuk komunikasi ke upstream
+    protocol: http
+    # Connection timeout dalam milliseconds
+    connect_timeout: 60000
+    # Write timeout - berapa lama Kong tunggu response dari upstream
+    write_timeout: 60000
+    # Read timeout
+    read_timeout: 60000
+    # Retries jika connection gagal
+    retries: 5
+
+    # Routes mendefinisikan bagaimana Kong menerima requests dan meneruskannya ke service
+    # Satu service bisa punya banyak routes dengan rules berbeda
+    routes:
+      # Route untuk user API endpoints
+      - name: user-api-route
+        # Paths yang akan di-match
+        # Request ke /api/v1/users akan di-route ke user-service
+        paths:
+          - /api/v1/users
+        # HTTP methods yang diperbolehkan
+        # Bisa juga set methods: ["GET", "POST"] untuk limit specific methods
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - PATCH
+        # Strip path berarti Kong akan remove /users dari request sebelum dikirim ke upstream
+        # Jika false, upstream akan terima full path termasuk /users
+        strip_path: false
+        # Preserve host header dari client
+        preserve_host: false
+        # Protocols yang diperbolehkan untuk route ini
+        protocols:
+          - http
+          - https
+
+      # Health check route - dedicated route untuk monitoring
+      - name: user-health-route
+        paths:
+          - /health
+        methods:
+          - GET
+        strip_path: false
+        protocols:
+          - http
+          - https
+
+# Plugins menambahkan functionality ke Kong
+# Plugins bisa di-apply di level global, service, atau route
+plugins:
+  # Rate Limiting - mencegah abuse dengan limit request per time window
+  # Plugin ini di-apply ke service level, jadi berlaku untuk semua routes di user-service
+  - name: rate-limiting
+    service: user-service
+    config:
+      # Limit: 100 requests per minute per consumer
+      minute: 100
+      # Policy untuk track rate limit
+      # local = in-memory (hilang saat restart, tapi fastest)
+      # cluster = shared across Kong nodes (untuk production dengan multiple Kong instances)
+      # redis = menggunakan Redis untuk persistence dan scaling
+      policy: local
+      # Limit by - bisa pakai consumer, credential, ip, service, header
+      limit_by: ip
+      # Hide client headers - jangan expose rate limit info ke client
+      hide_client_headers: false
+
+  # CORS - Cross-Origin Resource Sharing
+  # Ini penting jika frontend Anda di domain berbeda
+  - name: cors
+    service: user-service
+    config:
+      # Origins yang diperbolehkan
+      # '*' untuk allow semua, atau specify domains seperti ['https://example.com']
+      origins:
+        - '*'
+      # HTTP methods yang diperbolehkan
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - PATCH
+        - OPTIONS
+      # Headers yang diperbolehkan dalam request
+      headers:
+        - Accept
+        - Accept-Version
+        - Content-Length
+        - Content-MD5
+        - Content-Type
+        - Date
+        - Authorization
+        - X-Auth-Token
+      # Headers yang di-expose ke browser
+      exposed_headers:
+        - X-Auth-Token
+      # Allow credentials (cookies, authorization headers)
+      credentials: true
+      # Berapa lama browser cache preflight request
+      max_age: 3600
+
+  # Request/Response Transformer - modify request/response headers
+  # Berguna untuk add headers, remove sensitive headers, dll
+  - name: request-transformer
+    service: user-service
+    config:
+      # Add headers ke request yang dikirim ke upstream
+      add:
+        headers:
+          - X-Gateway:Kong
+          - X-Request-ID:$(request_id)
+      # Remove headers sebelum dikirim ke upstream
+      # Berguna untuk remove sensitive headers
+      remove:
+        headers:
+          - X-Forwarded-For
+
+  # Logging - log semua requests untuk monitoring dan debugging
+  # Ada berbagai logging plugins: file-log, http-log, tcp-log, udp-log
+  - name: file-log
+    service: user-service
+    config:
+      # Path ke log file
+      path: /tmp/kong-user-service.log
+      # Log format - combined adalah format standar Apache
+      # Custom format juga bisa dibuat
+      reopen: true
+
+  # IP Restriction - whitelist/blacklist IP addresses (opsional)
+  # Uncomment jika Anda mau restrict access by IP
+  # - name: ip-restriction
+  #   service: user-service
+  #   config:
+  #     # Whitelist - hanya IP ini yang boleh access
+  #     allow:
+  #       - 10.0.0.0/8
+  #       - 172.16.0.0/12
+  #       - 192.168.0.0/16
+  #     # Blacklist - IP ini tidak boleh access
+  #     # deny:
+  #     #   - 1.2.3.4
+
+  # Response Rate Limiting - limit berdasarkan response dari upstream
+  # Berbeda dengan rate-limiting yang limit request, ini limit berdasarkan header response
+  # - name: response-ratelimiting
+  #   service: user-service
+  #   config:
+  #     limits:
+  #       video:
+  #         minute: 10
+
+# Consumers - represents users/applications yang consume API
+# Consumers digunakan untuk authentication dan rate limiting per user
+# consumers:
+#   - username: test-user
+#     custom_id: user-001
+#     # Key authentication untuk consumer ini
+#     keyauth_credentials:
+#       - key: secret-key-123
+
+# Upstream configuration untuk load balancing (jika punya multiple instances)
+# upstreams:
+#   - name: user-service-upstream
+#     algorithm: round-robin
+#     # Hash on untuk consistent hashing
+#     hash_on: none
+#     # Slots untuk consistent hashing
+#     slots: 10000
+#     # Health checks
+#     healthchecks:
+#       active:
+#         healthy:
+#           interval: 5
+#           successes: 2
+#         unhealthy:
+#           interval: 5
+#           http_failures: 3
+#           timeouts: 3
+#       passive:
+#         healthy:
+#           successes: 2
+#         unhealthy:
+#           http_failures: 3
+#           timeouts: 3
+#     # Targets - actual instances
+#     targets:
+#       - target: user-service:8080
+#         weight: 100

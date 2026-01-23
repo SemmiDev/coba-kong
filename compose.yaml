@@ -1,0 +1,187 @@
+# Services adalah container-container yang akan di-run
+services:
+  # PostgreSQL database - ini opsional tapi saya sertakan untuk production-ready setup
+  postgres:
+    image: postgres:15-alpine
+    container_name: go-kong-postgres
+    environment:
+      POSTGRES_DB: userdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume untuk persist data database
+      # Data tidak akan hilang ketika container di-restart
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kong-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kong Database - Kong membutuhkan database untuk menyimpan konfigurasi
+  # Kita menggunakan Postgres untuk Kong
+  kong-database:
+    image: postgres:15-alpine
+    container_name: kong-database
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kongpass
+    volumes:
+      - kong_data:/var/lib/postgresql/data
+    networks:
+      - kong-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kong Migration - menjalankan migration untuk setup database Kong
+  # Container ini akan run sekali dan exit setelah migration selesai
+  kong-migration:
+    image: kong:latest
+    container_name: kong-migration
+    command: kong migrations bootstrap
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kongpass
+    networks:
+      - kong-network
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    restart: on-failure
+
+  # Kong API Gateway - ini adalah core API Gateway kita
+  kong:
+    image: kong:latest
+    container_name: kong-gateway
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kongpass
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      # Admin API diekspos untuk management
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      # Proxy listen adalah entry point untuk API requests
+      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
+    ports:
+      # 8000 adalah HTTP proxy - clients akan hit port ini
+      - "8000:8000"
+      # 8443 adalah HTTPS proxy
+      - "8443:8443"
+      # 8001 adalah Admin API untuk manage Kong
+      - "8001:8001"
+      # 8444 adalah Admin API HTTPS
+      - "8444:8444"
+    networks:
+      - kong-network
+    depends_on:
+      kong-database:
+        condition: service_healthy
+      kong-migration:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Konga Database - separate PostgreSQL 9.6 for Konga compatibility
+  # Konga's pg driver doesn't support PostgreSQL 15's SCRAM-SHA-256 auth
+  konga-database:
+    image: postgres:9.6-alpine
+    container_name: konga-database
+    environment:
+      POSTGRES_DB: konga
+      POSTGRES_USER: konga
+      POSTGRES_PASSWORD: kongapass
+    volumes:
+      - konga_data:/var/lib/postgresql/data
+    networks:
+      - kong-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U konga"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Konga - Web UI untuk manage Kong (opsional tapi sangat helpful)
+  # Konga membuat management Kong jauh lebih mudah dibanding curl ke Admin API
+  konga:
+    image: pantsel/konga:latest
+    container_name: konga-dashboard
+    environment:
+      NODE_ENV: production
+      DB_ADAPTER: postgres
+      DB_HOST: konga-database
+      DB_PORT: 5432
+      DB_DATABASE: konga
+      DB_USER: konga
+      DB_PASSWORD: kongapass
+    ports:
+      - "1337:1337"
+    networks:
+      - kong-network
+    depends_on:
+      konga-database:
+        condition: service_healthy
+    restart: on-failure
+
+  # User Service - aplikasi Go kita
+  user-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: user-service
+    environment:
+      SERVICE_NAME: user-service
+      ENVIRONMENT: production
+      PORT: 8080
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/userdb?sslmode=disable
+      JWT_SECRET: your-secret-key-change-in-production
+      KONG_ADMIN_URL: http://kong:8001
+    ports:
+      # Expose untuk debugging, tapi seharusnya diakses via Kong
+      - "8080:8080"
+    networks:
+      - kong-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kong:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+# Networks untuk isolasi dan komunikasi antar containers
+networks:
+  kong-network:
+    driver: bridge
+    name: kong-network
+
+# Named volumes untuk persistence data
+volumes:
+  postgres_data:
+    name: go-kong-postgres-data
+  kong_data:
+    name: go-kong-kong-data
+  konga_data:
+    name: go-kong-konga-data

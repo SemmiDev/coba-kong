@@ -1,0 +1,349 @@
+### ==============================================
+### Kong Gateway API Testing
+### ==============================================
+### Direct User Service: http://localhost:8080
+### Kong Proxy: http://localhost:8000
+### Kong Admin API: http://localhost:8001
+### Konga Dashboard: http://localhost:1337
+### ==============================================
+###
+### DECLARATIVE CONFIG (recommended):
+### Sync kong.yml to Kong using deck:
+### docker run --rm --network kong-network -v $(pwd)/kong:/kong kong/deck:latest gateway sync /kong/kong.yml --kong-addr http://kong-gateway:8001
+###
+### ==============================================
+
+@kong_proxy = http://localhost:8000
+@kong_admin = http://localhost:8001
+@direct_service = http://localhost:8080
+
+### ==============================================
+### HEALTH CHECKS
+### ==============================================
+
+### Health check via Kong Proxy
+GET {{kong_proxy}}/health
+Accept: application/json
+
+###
+
+### Health check direct to service
+GET {{direct_service}}/health
+Accept: application/json
+
+###
+
+### Kong Admin API status
+GET {{kong_admin}}/status
+Accept: application/json
+
+###
+
+### ==============================================
+### USER SERVICE ENDPOINTS (via Kong Proxy)
+### ==============================================
+
+### Get all users
+GET {{kong_proxy}}/api/v1/users
+Accept: application/json
+
+###
+
+### Create a new user
+POST {{kong_proxy}}/api/v1/users
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "email": "john@example.com"
+}
+
+###
+
+### Get user by ID (replace with actual ID)
+@user_id = 6ed9d6e6-59c6-485d-9cf9-c4dc434c47da
+
+GET {{kong_proxy}}/api/v1/users/{{user_id}}
+Accept: application/json
+
+###
+
+### Update user
+PUT {{kong_proxy}}/api/v1/users/{{user_id}}
+Content-Type: application/json
+
+{
+  "name": "John Updated",
+  "email": "john.updated@example.com"
+}
+
+###
+
+### Delete user
+DELETE {{kong_proxy}}/api/v1/users/{{user_id}}
+Accept: application/json
+
+###
+
+### ==============================================
+### KONG ADMIN API - Services Management
+### ==============================================
+
+### List all services
+GET {{kong_admin}}/services
+Accept: application/json
+
+###
+
+### Create a new service
+POST {{kong_admin}}/services
+Content-Type: application/json
+
+{
+  "name": "user-service",
+  "url": "http://user-service:8080"
+}
+
+###
+
+### Get specific service
+GET {{kong_admin}}/services/user-service
+Accept: application/json
+
+###
+
+### Update service
+PATCH {{kong_admin}}/services/user-service
+Content-Type: application/json
+
+{
+  "retries": 3,
+  "connect_timeout": 30000
+}
+
+###
+
+### Delete service
+# DELETE {{kong_admin}}/services/user-service
+# Accept: application/json
+
+###
+
+### ==============================================
+### KONG ADMIN API - Routes Management
+### ==============================================
+
+### List all routes
+GET {{kong_admin}}/routes
+Accept: application/json
+
+###
+
+### Create route for user-service
+POST {{kong_admin}}/services/user-service/routes
+Content-Type: application/json
+
+{
+  "name": "user-service-route",
+  "paths": ["/api/v1/users", "/health"],
+  "strip_path": false
+}
+
+###
+
+### Get specific route
+GET {{kong_admin}}/routes/user-service-route
+Accept: application/json
+
+###
+
+### Delete route
+# DELETE {{kong_admin}}/routes/user-service-route
+# Accept: application/json
+
+###
+
+### ==============================================
+### KONG ADMIN API - Plugins Management
+### ==============================================
+
+### List all plugins
+GET {{kong_admin}}/plugins
+Accept: application/json
+
+###
+
+### Enable rate-limiting plugin for user-service
+POST {{kong_admin}}/services/user-service/plugins
+Content-Type: application/json
+
+{
+  "name": "rate-limiting",
+  "config": {
+    "minute": 100,
+    "policy": "local"
+  }
+}
+
+###
+
+### Enable request-transformer plugin
+POST {{kong_admin}}/services/user-service/plugins
+Content-Type: application/json
+
+{
+  "name": "request-transformer",
+  "config": {
+    "add": {
+      "headers": ["X-Gateway: Kong"]
+    }
+  }
+}
+
+###
+
+### Enable cors plugin
+POST {{kong_admin}}/services/user-service/plugins
+Content-Type: application/json
+
+{
+  "name": "cors",
+  "config": {
+    "origins": ["*"],
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "headers": ["Accept", "Authorization", "Content-Type"],
+    "credentials": true,
+    "max_age": 3600
+  }
+}
+
+###
+
+### Enable basic-auth plugin
+POST {{kong_admin}}/services/user-service/plugins
+Content-Type: application/json
+
+{
+  "name": "basic-auth",
+  "config": {
+    "hide_credentials": true
+  }
+}
+
+###
+
+### ==============================================
+### KONG ADMIN API - Consumers Management
+### ==============================================
+
+### List all consumers
+GET {{kong_admin}}/consumers
+Accept: application/json
+
+###
+
+### Create a consumer
+POST {{kong_admin}}/consumers
+Content-Type: application/json
+
+{
+  "username": "api-user",
+  "custom_id": "user-001"
+}
+
+###
+
+### Add basic-auth credentials to consumer
+POST {{kong_admin}}/consumers/api-user/basic-auth
+Content-Type: application/json
+
+{
+  "username": "api-user",
+  "password": "secret123"
+}
+
+###
+
+### Test request with basic auth (after enabling basic-auth plugin)
+GET {{kong_proxy}}/api/v1/users
+Accept: application/json
+Authorization: Basic YXBpLXVzZXI6c2VjcmV0MTIz
+
+###
+
+### ==============================================
+### KONG ADMIN API - Upstreams & Targets (Load Balancing)
+### ==============================================
+
+### Create upstream for load balancing
+POST {{kong_admin}}/upstreams
+Content-Type: application/json
+
+{
+  "name": "user-service-upstream",
+  "algorithm": "round-robin",
+  "healthchecks": {
+    "active": {
+      "http_path": "/health",
+      "healthy": {
+        "interval": 5,
+        "successes": 2
+      },
+      "unhealthy": {
+        "interval": 5,
+        "http_failures": 3
+      }
+    }
+  }
+}
+
+###
+
+### Add target to upstream
+POST {{kong_admin}}/upstreams/user-service-upstream/targets
+Content-Type: application/json
+
+{
+  "target": "user-service:8080",
+  "weight": 100
+}
+
+###
+
+### List upstream targets
+GET {{kong_admin}}/upstreams/user-service-upstream/targets
+Accept: application/json
+
+###
+
+### ==============================================
+### KONG ADMIN API - Certificates (SSL/TLS)
+### ==============================================
+
+### List all certificates
+GET {{kong_admin}}/certificates
+Accept: application/json
+
+###
+
+### ==============================================
+### KONG ADMIN API - Info & Debug
+### ==============================================
+
+### Get Kong node information
+GET {{kong_admin}}/
+Accept: application/json
+
+###
+
+### Get Kong configuration
+GET {{kong_admin}}/config
+Accept: application/json
+
+###
+
+### Get all enabled plugins
+GET {{kong_admin}}/plugins/enabled
+Accept: application/json
+
+###
